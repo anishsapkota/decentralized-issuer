@@ -1,5 +1,6 @@
 # decentralized-issuer
-Decentralising credentials issuance authority by using multi party computation based threshold signatures
+Decentralising credentials issuance authority by using multi party computation based threshold signatures.
+
 This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold Signatures](https://eprint.iacr.org/2020/852.pdf)
 
 # Running locally
