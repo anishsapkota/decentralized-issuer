@@ -36,8 +36,8 @@ For inital run, there are no partial keys, so this will initiate distirbuted key
 - Scan the QR code with your wallet app, such as [iGrant.io DataWallet](https://igrant.io/datawallet.html).
 - PIN: 1234
   
-The purpose of the wallet is to initiate the issuance workflow based on OID4VCI.
-The wallet cannot verify schnorr signatures, so it will throw jwt is invalid at the end
+**The purpose of the wallet is to initiate the issuance workflow based on OID4VCI.
+The wallet cannot verify schnorr signatures, so it will throw jwt is invalid at the end**
 
 2. Copy the generated jwt from the issuer's console and verify it by sending a post request with following body to `http://localhost:3030/verify`.
   ```
