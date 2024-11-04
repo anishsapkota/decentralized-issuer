@@ -1,9 +1,10 @@
 # decentralized-issuer
 Decentralising credentials issuance authority by using multi party computation based threshold signatures
+This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold Signatures](https://eprint.iacr.org/2020/852.pdf)
 
 # Running locally
 **Issuer**
-1. Replace .env url with [https://ngrok.com](ngrok) url for localhost:7001
+1. Replace .env url with [ngrok](https://ngrok.com) url for localhost:7001
 2. ```cargo run```
 
 This will start your issuer
