@@ -21,10 +21,12 @@ actix-rt = "2"
 env_logger = "0.9"
 log = "0.4"
 jsonwebtoken = "8.1"
-p256 = { version = "0.10", features = ["ecdsa", "pkcs8","pem"] }
 chrono = "0.4.38"
 warp = "0.3.7"
 scc = "2.2.0"
 hex = "0.4.3"
 clap = { version = "4.5.20", features = ["derive"] }
+dotenv = "0.15.0"
+lazy_static = "1.5.0"
+redis = "0.28.2"
 

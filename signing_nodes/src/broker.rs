@@ -3,7 +3,9 @@ use crate::node_state::NodeState;
 use futures_util::stream::StreamExt;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::{ClientConfig, TopicPartitionList};
+use std::env;
 use std::error::Error;
+
 
 pub async fn create_consumer(
     node_id: u32,
@@ -11,7 +13,8 @@ pub async fn create_consumer(
 ) -> Result<StreamConsumer, Box<dyn Error>> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", format!("node-{}", node_id))
-        .set("bootstrap.servers", "localhost:9092")
+        //.set("bootstrap.servers", "localhost:9092")
+        .set("bootstrap.servers",env::var("KAFKA_BROKER").unwrap_or("localhost:9092".to_string()))
         .set("enable.partition.eof", "false")
         .set("session.timeout.ms", "6000")
         .set("enable.auto.commit", "true")
@@ -40,6 +43,8 @@ pub async fn create_consumer(
             "heartbeats",
             "master_announcements",
             "signing_requests",
+            "preprocessed_commitments",
+            "retry_dkg"
         ])
         .expect("Can't subscribe to specified topics");
 

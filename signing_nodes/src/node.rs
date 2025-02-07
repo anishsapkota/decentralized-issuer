@@ -4,7 +4,7 @@ use crate::frost_lib::keygen::{
     KeyGenDKGPropsedCommitment, Share,
 };
 use crate::frost_lib::sign::{
-    aggregate, preprocess, sign, validate, SigningCommitment, SigningResponse,
+     aggregate, preprocess, sign, validate, SigningCommitment, SigningResponse
 };
 use crate::messages::*;
 use crate::node_state::{NodeState, SigningSession};
@@ -18,14 +18,24 @@ use rdkafka::message::OwnedMessage;
 use rdkafka::producer::FutureRecord;
 use rdkafka::Message;
 use scc::HashMap;
-use std::fs::File;
+use std::env;
+use std::fs::{remove_file, File};
 use std::io::Write;
-use std::sync::Arc;
+use std::num::NonZero;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use uuid::Uuid;
 use warp::Filter;
+use lazy_static::lazy_static;
+use redis::{Client, Commands, RedisResult};
+use std::path::Path;
+
+lazy_static! {
+    static ref REDIS_CLIENT: Mutex<Client> =
+        Mutex::new(redis::Client::open("redis://redis/").expect("Failed to create Redis client"));
+}
 
 pub async fn process_message(state: &NodeState, msg: OwnedMessage) {
     let payload = match msg.payload_view::<str>() {
@@ -41,6 +51,25 @@ pub async fn process_message(state: &NodeState, msg: OwnedMessage) {
             let data: BroadcastCommitmentData = serde_json::from_str(payload).unwrap();
             receive_commitment(state, data).await;
         }
+        "retry_dkg" => {
+            let data: BroadcastRetryDKGData = serde_json::from_str(payload).unwrap();
+
+            fn file_exists(file_path: &str) -> bool {
+                Path::new(file_path).exists()
+            }
+
+            if file_exists(&format!("keys/{}_key.txt", state.node_id)) { 
+                if let Err(e) = remove_file(format!("keys/{}_key.txt", state.node_id)) {
+                    eprintln!("Failed to delete file {}",e);
+                }
+            } else if file_exists("keys/group_key.pem") {
+                if let Err(e) = remove_file(format!("keys/group_key.pem")) {
+                    eprintln!("Failed to delete file {}",e);
+                }
+                
+            }
+            start_keygen(state.clone()).await;
+        }
         topic if topic.starts_with("shares-") => {
             let data: ShareData = serde_json::from_str(payload).unwrap();
             receive_share(state, data).await;
@@ -52,14 +81,6 @@ pub async fn process_message(state: &NodeState, msg: OwnedMessage) {
         "signing_responses" => {
             let data: SigningResponseData = serde_json::from_str(payload).unwrap();
             receive_signing_response(state, data).await;
-        }
-        "heartbeats" => {
-            let data: Heartbeat = serde_json::from_str(payload).unwrap();
-            handle_heartbeat(state, data).await;
-        }
-        "master_announcements" => {
-            let data: MasterAnnouncement = serde_json::from_str(payload).unwrap();
-            handle_master_announcement(state, data).await;
         }
         "signing_requests" => {
             let data: SigningRequest = serde_json::from_str(payload).unwrap();
@@ -81,6 +102,10 @@ pub async fn start_keygen(state: NodeState) {
     let threshold = state.threshold;
     let context = CONTEXT;
 
+    let _ = &state.commitments_db.clear();
+    let _ = &state.shares_db.clear();
+    let _ = &state.keypair_db.clear();
+
     // Begin the key generation protocol
     let (commitment, shares) =
         keygen_begin(total_nodes, threshold, node_id, context, &mut rng).unwrap();
@@ -90,6 +115,8 @@ pub async fn start_keygen(state: NodeState) {
 
     // Send shares to corresponding nodes via Kafka
     send_shares(&state, shares.clone()).await;
+    sleep(Duration::from_secs(5)).await;
+    finalize_keygen(state.clone()).await;
 }
 
 pub async fn broadcast_commitment(state: &NodeState, commitment: KeyGenDKGPropsedCommitment) {
@@ -111,6 +138,26 @@ pub async fn broadcast_commitment(state: &NodeState, commitment: KeyGenDKGPropse
         .await
         .unwrap();
 }
+
+pub async fn broadcast_retry_dkg(state: &NodeState) {
+    let data = BroadcastRetryDKGData {
+        sender: state.node_id,
+    };
+
+    let payload = serde_json::to_string(&data).unwrap();
+    let key_str = state.node_id.to_string();
+
+    let record: FutureRecord<String, String> = FutureRecord::to("retry_dkg")
+        .payload(&payload)
+        .key(&key_str);
+
+    let _ = state
+        .producer
+        .send(record, Duration::from_secs(0))
+        .await
+        .unwrap();
+}
+
 
 pub async fn send_shares(state: &NodeState, shares: Vec<Share>) {
     for share in shares {
@@ -160,6 +207,7 @@ pub async fn finalize_keygen(state: NodeState) {
     let context = CONTEXT;
 
     // Wait until all commitments are received
+    let mut count = 15;
     loop {
         let ready = {
             let db = &state.commitments_db;
@@ -169,6 +217,12 @@ pub async fn finalize_keygen(state: NodeState) {
             break;
         } else {
             sleep(Duration::from_secs(1)).await;
+            if count == 0 {
+                println!("Not all commitments received");
+                broadcast_retry_dkg(&state).await;
+                return;
+            }
+            count -= 1;
         }
     }
 
@@ -228,6 +282,7 @@ pub async fn finalize_keygen(state: NodeState) {
             Ok(kp) => kp,
             Err(e) => {
                 println!("Keygen error: {:?}", e);
+                broadcast_retry_dkg(&state).await;
                 return;
             }
         }
@@ -245,152 +300,46 @@ pub async fn finalize_keygen(state: NodeState) {
     ));
     let _ = file.write_all(serde_json::to_string(&keypair).unwrap().as_bytes());
 
-    if *state.is_master.lock().unwrap() {
-        let mut file = File::create("keys/group_key.pem").expect(&format!(
-            "Cannot create group_key.pem file for node {}",
-            state.node_id
-        ));
-        let _ = file.write_all(group_pubkey_to_pem(&keypair.group_public).as_bytes());
-    }
+     if state.node_id == 1 {
+         let mut file = File::create("keys/group_key.pem").expect(&format!(
+             "Cannot create group_key.pem file for node {}",
+             state.node_id
+         ));
+         let _ = file.write_all(group_pubkey_to_pem(&keypair.group_public).as_bytes());
+     }
 
     println!("Node {}: Key generation finalized", state.node_id);
 }
 
-pub async fn leader_election(state: NodeState) {
-    // Simple leader election: Node with the lowest ID becomes the master
-    {
-        let mut master_id = state.master_id.lock().unwrap();
-        *master_id = 1;
-    }
-
-    if state.node_id == 1 {
-        {
-            let mut is_master = state.is_master.lock().unwrap();
-            *is_master = true;
-        }
-
-        println!("Node {} is elected as the master", state.node_id);
-
-        // Broadcast master announcement
-        broadcast_master_announcement(state.clone()).await;
-    } else {
-        println!("Node {} recognizes Node {} as the master", state.node_id, 1);
-    }
-}
-
-pub async fn broadcast_master_announcement(state: NodeState) {
-    let data = MasterAnnouncement {
-        master_id: state.node_id,
-    };
-
-    let payload = serde_json::to_string(&data).unwrap();
-    let key_str = state.node_id.to_string();
-
-    let record: FutureRecord<String, String> = FutureRecord::to("master_announcements")
-        .payload(&payload)
-        .key(&key_str);
-
-    let _ = state
-        .producer
-        .send(record, Duration::from_secs(0))
-        .await
-        .unwrap();
-}
-
-pub async fn handle_master_announcement(state: &NodeState, data: MasterAnnouncement) {
-    let mut master_id = state.master_id.lock().unwrap();
-    *master_id = data.master_id;
-
-    let mut is_master = state.is_master.lock().unwrap();
-    *is_master = state.node_id == data.master_id;
-}
-
-pub async fn send_heartbeat(state: NodeState) {
-    loop {
-        let data = Heartbeat {
-            sender: state.node_id,
-        };
-
-        let payload = serde_json::to_string(&data).unwrap();
-        let key_str = state.node_id.to_string();
-
-        let record: FutureRecord<String, String> = FutureRecord::to("heartbeats")
-            .payload(&payload)
-            .key(&key_str);
-
-        let _ = state
-            .producer
-            .send(record, Duration::from_secs(0))
-            .await
-            .unwrap();
-
-        sleep(Duration::from_secs(10)).await;
-    }
-}
-
-pub async fn handle_heartbeat(state: &NodeState, data: Heartbeat) {
-    println!("{}: heartbeat from {}", state.node_id, data.sender);
-    let db = &state.last_heartbeat;
-    let _ = db.insert(data.sender, Instant::now());
-}
-
-pub async fn detect_failure(state: NodeState) {
-    loop {
-        sleep(Duration::from_secs(2)).await;
-
-        let master_id = {
-            let master_id = state.master_id.lock().unwrap();
-            *master_id
-        };
-
-        if master_id == state.node_id {
-            // I'm the master; no need to check
-            continue;
-        }
-
-        let last_heartbeat_time = {
-            let db = &state.last_heartbeat;
-            db.read(&master_id, |_, v| *v)
-        };
-
-        if let Some(last_heartbeat_time) = last_heartbeat_time {
-            if last_heartbeat_time.elapsed() > Duration::from_secs(20) {
-                println!(
-                    "Node {}: Master {} failed. Initiating leader election.",
-                    state.node_id, master_id
-                );
-                leader_election(state.clone()).await;
-            }
-        } else {
-            // No heartbeat received yet
-            println!(
-                "Node {}: No heartbeat from master {}. Initiating leader election.",
-                state.node_id, master_id
-            );
-            leader_election(state.clone()).await;
-        }
-    }
-}
 
 pub async fn initiate_signing(state: NodeState, payload: String, request_id: String) {
-    // Master selects signers
+    
+    let mode = env::var("MODE").unwrap_or_else(|_| "two_round".to_string());
+
     let mut rng = OsRng;
     let mut nodes: Vec<u32> = (1..=state.total_nodes).collect();
     nodes.shuffle(&mut rng);
 
-    let selected_signers: Vec<u32> = nodes.into_iter().take(state.threshold as usize).collect();
+    let mut selected_signers: Vec<u32> = (nodes.into_iter().take(state.threshold as usize).collect());
+    
+    selected_signers.sort();
 
-    // println!(
-    //     "Req: {} selected signers: {:?}",
-    //     request_id, selected_signers
-    // );
+    let (ids, signing_commitments )= if mode == "one_round" {
+        get_commitments(selected_signers.clone())
+    } else {
+        (vec![], vec![])
+    };
 
     // Broadcast signing request
     let data = SigningRequest {
         payload,
         selected_signers: selected_signers.clone(),
         request_id: request_id.to_string(),
+        signing_commitment_ids: ids,
+        aggregrator_id: state.node_id,
+        signing_commitments: signing_commitments.clone(),
     };
+
 
     let payload = serde_json::to_string(&data).unwrap();
     let key_str = state.node_id.to_string();
@@ -404,9 +353,14 @@ pub async fn initiate_signing(state: NodeState, payload: String, request_id: Str
         .send(record, Duration::from_secs(0))
         .await
         .unwrap();
+
+
 }
 
 pub async fn handle_signing_request(state: &NodeState, data: SigningRequest) {
+
+    let mode = env::var("MODE").unwrap_or_else(|_| "two_round".to_string());
+
     let is_selected = data.selected_signers.contains(&state.node_id);
 
     // Create a new SigningSession
@@ -415,6 +369,7 @@ pub async fn handle_signing_request(state: &NodeState, data: SigningRequest) {
         signing_commitments_db: Arc::new(HashMap::default()),
         signing_responses_db: Arc::new(HashMap::default()),
         signers_pubkeys_db: Arc::new(HashMap::default()),
+        aggregrator_id: data.aggregrator_id,
     };
 
     {
@@ -448,44 +403,66 @@ pub async fn handle_signing_request(state: &NodeState, data: SigningRequest) {
         };
 
         let mut rng = OsRng;
-        let (commitments, mut nonces) = match preprocess(1, state.node_id, &mut rng) {
-            Ok(result) => result,
-            Err(e) => {
-                println!("Preprocess error: {:?}", e);
-                return;
+        let (commitments, mut nonces) = if mode == "two_round" {
+            // generate commitmment and nonces on the fly
+            match preprocess(1, state.node_id, &mut rng) {
+                Ok(result) => result,
+                Err(e) => {
+                    println!("Preprocess error: {:?}", e);
+                    return;
+                }
             }
-        };
+        } else {
+            // use preprocessed commitments and nonces
+            let key: u32 = data.signing_commitment_ids
+            .iter()
+            .find(|e| e.0 == state.node_id)  // Find the first match
+            .map(|e| e.1).unwrap().try_into().unwrap();
 
-        // Broadcast signing commitment via Kafka
-        broadcast_signing_commitment(&state, commitments[0].clone(), data.request_id.clone()).await;
-
-        let mut selected_signers_sorted = data.selected_signers.clone();
-        selected_signers_sorted.sort();
-
-        // Wait until all signing commitments are received
-        loop {
-            let ready = {
-                let db = &session.signing_commitments_db;
-                db.len() >= state.threshold as usize
+            let  nonce_pair = {
+                let nonces = &state.preprocessed_nonces;
+            nonces.get(&key).unwrap().clone()
             };
-            if ready {
-                break;
-            } else {
-                sleep(Duration::from_secs(1)).await;
-            }
+            let nonces = vec![nonce_pair];
+                (vec![], nonces)
+        };
+        
+
+        // // Broadcast signing commitment via Kafka
+        if mode=="two_round" {
+            broadcast_signing_commitment(&state, commitments[0].clone(), data.request_id.clone()).await;
         }
 
-        // Collect all signing commitments
-        let signing_commitments: Vec<SigningCommitment> = {
-            let db = &session.signing_commitments_db;
-            selected_signers_sorted
-                .iter()
-                .map(|key| db.get(key).unwrap().clone())
-                .collect()
-        };
+         let mut selected_signers_sorted = data.selected_signers.clone();
+          selected_signers_sorted.sort();
 
-        // Sign the message
-        //let msg = generate_jwt_header_and_payload(&data.payload);
+        // // Wait until all signing commitments are received
+       let signing_commitments =  if mode=="two_round" {
+            loop {
+                let ready = {
+                    let db = &session.signing_commitments_db;
+                    db.len() >= state.threshold as usize
+                };
+                if ready {
+                    break;
+                } else {
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+    
+            // Collect all signing commitments
+            let signing_commitments: Vec<SigningCommitment> = {
+                let db = &session.signing_commitments_db;
+                selected_signers_sorted
+                    .iter()
+                    .map(|key| db.get(key).unwrap().clone())
+                    .collect()
+            };
+            signing_commitments
+        } else {
+            data.signing_commitments.clone()
+        };
+        
 
         let response = match sign(&keypair, &signing_commitments, &mut nonces, &data.payload) {
             Ok(resp) => resp,
@@ -563,16 +540,12 @@ pub async fn handle_signing_request(state: &NodeState, data: SigningRequest) {
         signature_bytes.extend_from_slice(&z_bytes);
 
         let signature_b64 = encode_config(&signature_bytes, URL_SAFE_NO_PAD);
-        //let signed_jwt = format!("{}.{}", msg, signature_b64);
 
         if selected_signers_sorted[0] == state.node_id {
-            // println!(
-            //     "Node {} req: {} -> Signed JWT: {}",
-            //     state.node_id, data.request_id, signed_jwt
-            // );
 
             let response_data = SigningResult {
                 request_id: data.request_id.clone(),
+                initator_id: data.aggregrator_id.clone(),
                 signature: signature_b64.clone(),
             };
 
@@ -591,15 +564,6 @@ pub async fn handle_signing_request(state: &NodeState, data: SigningRequest) {
         }
         // Clean up the session
         state.signing_sessions.remove(&data.request_id);
-        // println!(
-        //     "Node {} : signing completed for request id: {} ",
-        //     state.node_id, data.request_id
-        // );
-        // state
-        //     .signing_requests
-        //     .lock()
-        //     .unwrap()
-        //     .remove(&data.request_id);
     }
 }
 
@@ -708,17 +672,37 @@ pub async fn receive_signing_commitment(state: &NodeState, data: SigningCommitme
 }
 
 pub async fn receive_signing_response(state: &NodeState, data: SigningResponseData) {
-    let session = match state
-        .signing_sessions
-        .read(&data.request_id, |_, v| v.clone())
-    {
-        Some(session) => session,
-        None => {
-            println!(
-                " Node {} --> sign_res : No signing session found for request ID {}",
-                state.node_id, data.request_id
-            );
-            return;
+    let max_retries = 3;
+    let retry_delay = Duration::from_millis(500);
+    let mut attempts = 0;
+
+
+    let session = loop {
+        match state
+            .signing_sessions
+            .read(&data.request_id, |_, v| v.clone())
+        {
+            Some(session) => {
+                // If session is found, break the loop and return the session
+                break session;
+            }
+            None => {
+                // If session is not found
+                attempts += 1;
+                if attempts >= max_retries {
+                    println!(
+                        "Node {} --> sign_res: No signing session found for request ID {} after {} attempts",
+                        state.node_id, data.request_id, attempts
+                    );
+                    return;
+                } else {
+                    println!(
+                        "Node {} --> sign_res: No signing session found for request ID {}, retrying... (attempt {}/{})",
+                        state.node_id, data.request_id, attempts, max_retries
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
         }
     };
 
@@ -738,6 +722,9 @@ pub async fn receive_signing_response(state: &NodeState, data: SigningResponseDa
         let _ = signers_pubkeys_db.insert(data.sender, data.signer_pubkey);
     }
 }
+
+
+
 
 pub async fn start_http_server(state: NodeState) {
     let state_filter = warp::any().map(move || state.clone());
@@ -785,25 +772,22 @@ pub async fn start_http_server(state: NodeState) {
             }
         });
 
+        
     // Combine the routes
     let routes = sign_route.or(verify_route);
 
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    println!("HTTP server is running on port 3030...");
+    warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
 }
 
 pub async fn handle_signing_result(state: &NodeState, data: SigningResult) {
-    // Retrieve the oneshot sender from the state's signing_requests
-    let is_master = {
-        let is_master_lock = state.is_master.lock().unwrap();
-        *is_master_lock
-    };
 
     let sender = {
         let mut signing_requests = state.signing_requests.lock().unwrap();
         signing_requests.remove(&data.request_id)
     };
 
-    if is_master {
+    if state.node_id == data.initator_id {
         if let Some(tx) = sender {
             if tx.send(data.signature).is_err() {
                 eprintln!(
@@ -818,9 +802,76 @@ pub async fn handle_signing_result(state: &NodeState, data: SigningResult) {
                 state.node_id, data.request_id
             );
         }
-        // println!(
-        //     "Node {} req_id {} : res {}",
-        //     state.node_id, data.request_id, data.signed_jwt
-        // );
     }
+}
+
+fn store_commitments_in_redis(node_id: u32, commitments: Vec<SigningCommitment>) -> RedisResult<()> {
+    let redis_key = format!("commitments:{}", node_id);
+    let mut conn = REDIS_CLIENT.lock().unwrap().get_connection().unwrap();
+    let mut count = 1;
+    for commitment in commitments {
+        let redis_comm = RedisCommitments {
+            id: count,
+            commitment: commitment.clone(),
+        };
+        let serialized = serde_json::to_string(&redis_comm).unwrap();
+        conn.lpush(&redis_key, serialized)?;
+        count += 1;
+    }
+    Ok(())
+}
+
+fn get_commitments(selected_signers: Vec<u32>) -> (Vec<(u32,usize)>,Vec<SigningCommitment>) {
+    let mut signing_commitments = Vec::new();
+    let mut ids = Vec::<(u32,usize)>::new();
+    for node_id in &selected_signers {
+        // Get commitment from Redis
+        if let Ok(Some(commitment)) = pop_commitment_from_redis(*node_id) {
+            signing_commitments.push(commitment.commitment);
+            ids.push((*node_id,commitment.id));  
+        }
+    }
+
+    (ids, signing_commitments)
+    
+}
+
+fn pop_commitment_from_redis(node_id: u32) -> RedisResult<Option<RedisCommitments>> {
+    let redis_key = format!("commitments:{}", node_id);
+    let mut conn = REDIS_CLIENT.lock().unwrap().get_connection()?;
+    let elements: Vec<String> = conn.rpop(&redis_key, NonZero::new(1))?;
+    if let Some(serialized) = elements.into_iter().next() {
+        let commitment = serde_json::from_str(&serialized).unwrap();
+        Ok(Some(commitment))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn preprocess_nonces_commitments(state: NodeState) {
+
+    let num_commitments = env::var("NUM_COMMITMENTS")
+        .unwrap_or_else(|_| "1000".to_string())
+        .parse::<u32>()
+        .unwrap();
+    let mut rng = OsRng;
+    let (commitments, nonces) = match preprocess(num_commitments.try_into().unwrap(), state.node_id, &mut rng) {
+        Ok(result) => result,
+        Err(e) => {
+            println!("Preprocess error: {:?}", e);
+            return;
+        }
+    };
+
+    
+        for i in 1..num_commitments+1 {
+            let nonces_db = &state.preprocessed_nonces;
+            let _ = nonces_db.insert(i, nonces[i as usize - 1].clone());
+        }
+    
+
+    store_commitments_in_redis
+        (state.node_id, commitments.clone())
+        .expect("Failed to store commitments in Redis");
+
 }

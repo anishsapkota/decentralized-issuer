@@ -1,7 +1,8 @@
 use crate::frost_lib::keygen::{KeyGenDKGPropsedCommitment, KeyPair, Share};
-use crate::frost_lib::sign::{SigningCommitment, SigningResponse};
+use crate::frost_lib::sign::{NoncePair, SigningCommitment, SigningResponse};
 use rdkafka::producer::FutureProducer;
 use scc::HashMap;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -14,6 +15,7 @@ pub struct SigningSession {
     pub signing_commitments_db: Db<SigningCommitment>,
     pub signing_responses_db: Db<SigningResponse>,
     pub signers_pubkeys_db: Db<curve25519_dalek::ristretto::RistrettoPoint>,
+    pub aggregrator_id: u32
 }
 
 #[derive(Clone)]
@@ -34,4 +36,6 @@ pub struct NodeState {
     pub last_heartbeat: Arc<HashMap<u32, Instant>>,
     // Kafka
     pub producer: FutureProducer,
+    // Preprocessed commitments and nonces
+    pub preprocessed_nonces: Db<NoncePair>,
 }

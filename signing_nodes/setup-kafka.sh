@@ -1,22 +1,25 @@
 #!/bin/bash
 
+# Define the number of nodes
+NUM_NODES=15
+
 # Define the Kafka broker address inside the Docker container (assuming it's the default address)
-BROKER="localhost:9092"
+BROKER="localhost:9094"
 
 # Docker container name where Kafka is running
-KAFKA_CONTAINER="kafka"
+KAFKA_CONTAINER="kafka2"
 
 # List of topics to alter
 topics=(
     "commitments"
     "key-gen-finished-announcements"
-    # "shares-${NODE_ID}"
     "signing_commitments"
     "signing_responses"
     "heartbeats"
     "master_announcements"
     "signing_requests"
     "signing_results"
+    "preprocessed_commitments"
 )
 
 # Set the number of partitions
@@ -24,36 +27,32 @@ NUM_PARTITIONS=3
 
 # Loop through each topic and alter the partition count
 for topic in "${topics[@]}"; do
-    echo "Altering topic: $topic"
+    echo "Creating topic: $topic"
     
     # Run kafka-topics.sh inside the Kafka Docker container
-    docker exec -it $KAFKA_CONTAINER ./opt/kafka/bin/kafka-topics.sh --alter \
+    docker exec -it $KAFKA_CONTAINER ./opt/kafka/bin/kafka-topics.sh --create \
         --bootstrap-server $BROKER \
         --topic "$topic" \
-        --partitions $NUM_PARTITIONS
+        //--partitions $NUM_PARTITIONS
 
     if [ $? -eq 0 ]; then
-        echo "Successfully altered partitions for topic: $topic"
+        echo "Successfully created partitions for topic: $topic"
     else
-        echo "Failed to alter partitions for topic: $topic"
+        echo "Failed to create partitions for topic: $topic"
     fi
 done
 
-
-#Now, for the topics that depend on NODE_ID ranging from 1 to 5
-for NODE_ID in {1..5}; do
+for (( NODE_ID=1; NODE_ID<=NUM_NODES; NODE_ID++ )); do
     topic="shares-${NODE_ID}"
-    echo "Altering topic: $topic"
-
     # Run kafka-topics.sh inside the Kafka Docker container for each shares topic
-    docker exec -it $KAFKA_CONTAINER ./opt/kafka/bin/kafka-topics.sh --alter \
+    docker exec -it $KAFKA_CONTAINER ./opt/kafka/bin/kafka-topics.sh --create \
         --bootstrap-server $BROKER \
         --topic "$topic" \
-        --partitions $NUM_PARTITIONS
+        //--partitions $NUM_PARTITIONS
 
     if [ $? -eq 0 ]; then
-        echo "Successfully altered partitions for topic: $topic"
+        echo "Successfully created partitions for topic: $topic"
     else
-        echo "Failed to alter partitions for topic: $topic"
+        echo "Failed to create partitions for topic: $topic"
     fi
 done

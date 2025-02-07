@@ -53,7 +53,7 @@ impl SigningCommitment {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct NoncePair {
     d: Nonce,
     e: Nonce,
@@ -83,7 +83,7 @@ impl NoncePair {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Nonce {
     secret: Scalar,
     pub public: RistrettoPoint,

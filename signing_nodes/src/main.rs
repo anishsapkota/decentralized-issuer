@@ -8,191 +8,134 @@ mod utils;
 
 use broker::{consume_messages, create_consumer};
 use frost_lib::keygen::{KeyGenDKGPropsedCommitment, KeyPair, Share};
-use node::{finalize_keygen, initiate_signing, leader_election, start_http_server, start_keygen};
+use node::{preprocess_nonces_commitments, start_http_server, start_keygen};
 use node_state::{Db, NodeState};
 use scc::HashMap;
 use utils::check_and_read_keypair;
-
+use dotenv::dotenv;
 use rdkafka::consumer::StreamConsumer;
 use rdkafka::producer::FutureProducer;
 use rdkafka::ClientConfig;
+use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
 use clap::Parser;
 
 #[derive(Parser)]
+#[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short = 'n', long, default_value_t = 5)]
-    num_nodes: usize,
+    #[arg(short = 'i', long, default_value_t = 1)]
+    node_id: u32,
 
-    #[arg(short = 't', long, default_value_t = 3)]
+    #[arg(short = 'n', long, default_value_t = 1)]
+    total_nodes: usize,
+
+    #[arg(short = 't', long, default_value_t = 1)]
     threshold: usize,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv().ok();
+
     let args = Args::parse();
 
-    let num_nodes = args.num_nodes;
-    let threshold = args.threshold;
+    let total_nodes = env::var("N")
+    .ok()
+    .and_then(|s| s.parse::<usize>().ok())
+    .unwrap_or(args.total_nodes);
 
-    let mut tasks = Vec::new();
+    let threshold = env::var("T")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(args.threshold);
+    let node_id = env::var("NODE_ID")
+    .ok()
+    .and_then(|s| s.parse::<u32>().ok()) 
+    .unwrap_or(args.node_id);
 
-    println!("Number of nodes: {}", num_nodes);
+    let mode = env::var("MODE").unwrap_or_else(|_| "two_round".to_string());
+
+
+    println!("Starting node {}", node_id);
+    println!("Total nodes: {}", total_nodes);
     println!("Threshold: {}", threshold);
+    println!("Mode: {}", mode);
 
-    for i in 0..num_nodes {
-        let node_id = i as u32 + 1; // Node IDs start from 1
-        let total_nodes = num_nodes as u32;
-        let threshold = threshold as u32;
+    // Initialize Kafka producer and consumer
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", env::var("KAFKA_BROKER").unwrap_or("localhost:9092".to_string()))
+        //.set("bootstrap.servers", "localhost:9092")
+        .set("compression.type", "lz4")
+        .create()
+        .expect("Producer creation error");
 
-        let task = tokio::spawn(async move {
-            // Initialize Kafka producer and consumer
-            let producer: FutureProducer = ClientConfig::new()
-                .set("bootstrap.servers", "localhost:9092")
-                .set("compression.type", "lz4")
-                .create()
-                .expect("Producer creation error");
+    let consumer: StreamConsumer = create_consumer(node_id, 0)
+        .await
+        .expect("Consumer creation failed");
 
-            let consumer1: StreamConsumer = create_consumer(node_id, 0)
-                .await
-                .expect("Consumer1 creation failed");
-            // let consumer2: StreamConsumer = create_consumer(node_id, 1)
-            //     .await
-            //     .expect("Consumer2 creation failed");
-            // let consumer3: StreamConsumer = create_consumer(node_id, 2)
-            //     .await
-            //     .expect("Consumer2 creation failed");
+    // Initialize node state
+    let commitments_db: Db<KeyGenDKGPropsedCommitment> = Arc::new(HashMap::default());
+    let shares_db: Db<Vec<Share>> = Arc::new(HashMap::default());
+    let keypair_db: Db<KeyPair> = Arc::new(HashMap::default());
 
-            // Initialize node state
-            let commitments_db: Db<KeyGenDKGPropsedCommitment> = Arc::new(HashMap::default());
-            let shares_db: Db<Vec<Share>> = Arc::new(HashMap::default());
-            let keypair_db: Db<KeyPair> = Arc::new(HashMap::default());
+    let signing_requests = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let is_master = Arc::new(Mutex::new(false));
+    let master_id = Arc::new(Mutex::new(1));
+    let last_heartbeat = Arc::new(HashMap::default());
+    let signing_sessions = Arc::new(HashMap::default());
 
-            let signing_requests = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let state = NodeState {
+        node_id: node_id,
+        total_nodes: total_nodes as u32,
+        threshold: threshold as u32,
+        commitments_db,
+        shares_db,
+        keypair_db,
+        signing_requests,
+        is_master,
+        master_id,
+        last_heartbeat,
+        signing_sessions,
+        producer: producer.clone(),
+        preprocessed_nonces: Arc::new(HashMap::default()),
+    };
 
-            let is_master = Arc::new(Mutex::new(false));
-            let master_id = Arc::new(Mutex::new(0));
-            let last_heartbeat = Arc::new(HashMap::default());
-            let signing_sessions = Arc::new(HashMap::default());
+    // Start background tasks
+    let consumer_state = state.clone();
+    let consumer_task = tokio::spawn(async move {
+        consume_messages(consumer_state, consumer).await;
+    });
 
-            let state = NodeState {
-                node_id,
-                total_nodes,
-                threshold,
-                commitments_db,
-                shares_db,
-                keypair_db,
-                signing_requests,
-                is_master,
-                master_id,
-                last_heartbeat,
-                signing_sessions,
-                producer: producer.clone(),
-            };
+    sleep(Duration::from_secs(2)).await;
 
-            // Start background tasks
-            let consumer_state1 = state.clone();
-            // let consumer_state2 = state.clone();
-            // let consumer_state3 = state.clone();
-
-            let consumer_task1 = tokio::spawn(async move {
-                consume_messages(consumer_state1, consumer1).await;
-            });
-
-            // let consumer_task2 = tokio::spawn(async move {
-            //     consume_messages(consumer_state2, consumer2).await;
-            // });
-            // let consumer_task3 = tokio::spawn(async move {
-            //     consume_messages(consumer_state3, consumer3).await;
-            // });
-
-            //let failure_detector_state = state.clone();
-            // let failure_detector_task = tokio::spawn(async move {
-            //     detect_failure(failure_detector_state).await;
-            // });
-
-            // Wait a bit for all nodes to start
-            sleep(Duration::from_secs(2)).await;
-
-            // Leader Election
-            leader_election(state.clone()).await;
-
-            // Wait a bit
-            sleep(Duration::from_secs(2)).await;
-
-            if !check_and_read_keypair(state.clone()).unwrap() {
-                println!("No keys found: initiating distributed key-gen");
-
-                // Start key generation
-                start_keygen(state.clone()).await;
-
-                // Wait for key generation to complete
-                sleep(Duration::from_secs(5)).await;
-
-                // Finalize key generation
-                finalize_keygen(state.clone()).await;
-            }
-
-            // Wait a bit
-            sleep(Duration::from_secs(2)).await;
-
-            {
-                let is_master = {
-                    let is_master_lock = state.is_master.lock().unwrap();
-                    *is_master_lock
-                };
-
-                let mut http_task = None;
-                //let mut heartbeat_task = None;
-                if is_master {
-                    // let heartbeat_state = state.clone();
-                    // let _heartbeat_task = tokio::spawn(async move {
-                    //     send_heartbeat(heartbeat_state).await;
-                    // });
-
-                    // heartbeat_task = Some(_heartbeat_task);
-
-                    println!("Node {}: Starting HTTP server", state.node_id);
-                    let http_state = state.clone();
-                    let task = tokio::spawn(async move {
-                        start_http_server(http_state).await;
-                    });
-                    http_task = Some(task);
-
-                    // for i in 0..10 {
-                    //     let payload = serde_json::json!({
-                    //             "message": i
-                    //     });
-                    //     initiate_signing(state.clone(), payload, i.to_string()).await;
-                    //     // if i == 5 {
-                    //     //tokio::time::sleep(Duration::from_secs(2)).await;
-                    //     // }
-                    // }
-                }
-                consumer_task1.await.unwrap();
-                // consumer_task2.await.unwrap();
-                // consumer_task3.await.unwrap();
-
-                //failure_detector_task.await.unwrap();
-
-                // if let Some(task) = heartbeat_task {
-                //     task.await.unwrap();
-                // }
-
-                if let Some(task) = http_task {
-                    task.await.unwrap();
-                }
-            }
-            // Wait for the background tasks to finish
-        });
-        tasks.push(task);
+    // Check if keypair exists
+    if !check_and_read_keypair(state.clone()).unwrap() {
+        println!("Node {}: No keys found - initiating DKG", node_id);
+        start_keygen(state.clone()).await;
+        //sleep(Duration::from_secs(10)).await;
+        //finalize_keygen(state.clone()).await;
     }
 
-    for task in tasks {
-        task.await.unwrap();
+
+
+    // preprocess nonces
+    if mode == "one_round" {
+        sleep(Duration::from_secs(10)).await;
+        preprocess_nonces_commitments(state.clone()).await;
+        println!("Node {}: Preprocessing done", node_id);
+        sleep(Duration::from_secs(2)).await;
     }
+
+    println!("Node {}: Starting HTTP server", node_id);
+    let http_state = state.clone();
+    let http_task = tokio::spawn(async move {
+        start_http_server(http_state).await;
+    });
+        
+    http_task.await?;
+    consumer_task.await?;
 
     Ok(())
 }

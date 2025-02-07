@@ -1,11 +1,10 @@
 use actix_web::http::StatusCode;
-use actix_web::web::head;
 use actix_web::{get, post};
 use actix_web::{middleware::Logger, web, App, HttpRequest, HttpResponse, HttpServer};
 use base64::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use dotenv::dotenv;
-use helpers::{blind_message, generate_jwt_header_and_payload, BlindedMessage};
+use helpers::generate_jwt_header_and_payload;
 use jsonwebtoken::{
     dangerous_insecure_decode, decode, encode, Algorithm, DecodingKey, EncodingKey, Header,
     Validation,
@@ -72,6 +71,21 @@ struct OfferEntry {
     credential_data: Option<serde_json::Value>,
 }
 
+// Log each request and response
+async fn log_request(req: &HttpRequest, body: &str) {
+    let method = req.method();
+    let uri = req.uri();
+    let peer_addr = req.peer_addr().map_or("unknown".to_string(), |addr| addr.to_string());
+    println!(
+        "[{}] {} {} from {} - Body: {}",
+        Utc::now(),
+        method,
+        uri,
+        peer_addr,
+        body
+    );
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -106,7 +120,7 @@ async fn main() -> std::io::Result<()> {
             .service(credential_offer_id)
             .service(credential_issuer_metadata)
     })
-    .bind("127.0.0.1:7001")?
+    .bind("127.0.0.1:3000")?
     .run()
     .await
 }
@@ -123,7 +137,9 @@ struct CredentialOffer {
 }
 
 #[get("/jwks")]
-async fn jwks(data: web::Data<AppState>) -> HttpResponse {
+async fn jwks(req: HttpRequest,data: web::Data<AppState>) -> HttpResponse {
+    log_request(&req, "GET /jwks").await;
+
     let jwk = match pem_to_jwk(&data.public_key_pem, "public") {
         Ok(jwk) => jwk,
         Err(_) => return HttpResponse::InternalServerError().body("Failed to parse public key"),
@@ -214,9 +230,11 @@ struct JwkKey {
 
 #[post("/offer")]
 async fn credential_offer(
+    req: HttpRequest,
     data: web::Data<AppState>,
     req_body: web::Json<CredentialOffer>,
 ) -> HttpResponse {
+    log_request(&req, "POST /offer").await;
     let uuid = Uuid::new_v4().to_string();
     let issuer_state = Uuid::new_v4().to_string();
     let pre_authorized_code = generate_nonce(32);
@@ -235,7 +253,7 @@ async fn credential_offer(
     offer_map.insert(pre_authorized_code.clone(), entry);
     drop(offer_map);
 
-    let server_url = env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:7001".to_string());
+    let server_url = env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let credential_offer_uri = format!("{}/credential-offer/{}", server_url, pre_authorized_code);
     let credential_offer = format!(
         "openid-credential-offer://?credential_offer_uri={}",
@@ -246,8 +264,11 @@ async fn credential_offer(
 }
 
 #[get("/credential-offer/{id}")]
-async fn credential_offer_id(data: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
+async fn credential_offer_id(req: HttpRequest,
+    data: web::Data<AppState>, path: web::Path<String>) -> HttpResponse {
     let id = path.into_inner();
+    log_request(&req, &format!("GET /credential-offer/{}",id)).await;
+
     let offer_map = data.offer_map.lock().unwrap();
     let entry = offer_map.get(&id);
     if entry.is_none() {
@@ -256,7 +277,7 @@ async fn credential_offer_id(data: web::Data<AppState>, path: web::Path<String>)
     let entry = entry.unwrap();
 
     let response = serde_json::json!({
-        "credential_issuer": env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:7001".to_string()),
+        "credential_issuer": env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
         "credentials": entry.credential_data.as_ref().unwrap()["type"],
         "grants": {
             "authorization_code": {
@@ -273,7 +294,8 @@ async fn credential_offer_id(data: web::Data<AppState>, path: web::Path<String>)
 }
 
 #[get("/.well-known/openid-credential-issuer")]
-async fn credential_issuer_metadata() -> HttpResponse {
+async fn credential_issuer_metadata(req:HttpRequest) -> HttpResponse {
+    log_request(&req, "GET /.well-known/openid-credential-issuer").await;
     let metadata_path = PathBuf::from("metadata/issuer_config.json");
     let mut file = match File::open(&metadata_path) {
         Ok(file) => file,
@@ -292,7 +314,8 @@ async fn credential_issuer_metadata() -> HttpResponse {
 }
 
 #[get("/.well-known/openid-configuration")]
-async fn openid_configuration() -> HttpResponse {
+async fn openid_configuration(req:HttpRequest) -> HttpResponse {
+    log_request(&req, "GET /.well-known/openid-configuration").await;
     // Read environment variables
     let server_url = env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:7001".to_string());
     // let auth_server_url: String =
@@ -351,7 +374,8 @@ struct TokenRequest {
 }
 
 #[post("/token")]
-async fn token(data: web::Data<AppState>, req_body: web::Form<TokenRequest>) -> HttpResponse {
+async fn token(req:HttpRequest,data: web::Data<AppState>, req_body: web::Form<TokenRequest>) -> HttpResponse {
+    log_request(&req, "POST /token").await;
     let client_id = req_body.client_id.as_deref().unwrap_or("");
     let grant_type = req_body.grant_type.as_deref().unwrap_or("");
     let pre_authorized_code = req_body.pre_authorized_code.as_deref();
@@ -459,6 +483,7 @@ async fn credential(
     req: HttpRequest,
     req_body: web::Json<serde_json::Value>,
 ) -> HttpResponse {
+    log_request(&req, "POST /credential").await;
     // Authenticate the access token
     let auth_header = req.headers().get("Authorization");
     if auth_header.is_none() {
@@ -567,25 +592,6 @@ async fn credential(
         }
     });
 
-    // Sign the JWT
-    // let private_key_pem = &data.private_key_pem;
-    // let encoding_key = EncodingKey::from_ec_pem(private_key_pem.as_bytes())
-    //     .expect("Failed to create encoding key from private key");
-
-    // let header = Header {
-    //     alg: Algorithm::ES256,
-    //     kid: Some("tu-berlin#key-1".to_string()),
-    //     typ: Some("JWT".to_string()),
-    //     ..Default::default()
-    // };
-
-    // let credential_jwt = match jsonwebtoken::encode(&header, &payload, &encoding_key) {
-    //     Ok(jwt) => jwt,
-    //     Err(err) => {
-    //         println!("Error signing JWT: {}", err);
-    //         return HttpResponse::InternalServerError().body("Error issuing credential");
-    //     }
-    // };
 
     let header_payload = generate_jwt_header_and_payload(&payload);
 
@@ -596,7 +602,6 @@ async fn credential(
     let to_be_signed_hash = hex::encode(result);
 
     // send post request to the threshold-sig-nodes
-    //let msg : BlindedMessage = blind_message(header_payload.as_bytes());
     let client = Client::new();
 
     let res = client
@@ -640,7 +645,7 @@ async fn verify_access_token(
 
     let mut validation = Validation::new(Algorithm::ES256);
     validation.set_audience(&[
-        env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:7001".to_string())
+        env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
     ]);
 
     let token_data = decode::<Claims>(&tok, &public_key, &validation);
