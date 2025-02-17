@@ -4,7 +4,7 @@
 NUM_NODES=15
 
 # Define the Kafka broker address inside the Docker container (assuming it's the default address)
-BROKER="localhost:9092"
+BROKER="localhost:29092"
 
 # Docker container name where Kafka is running
 KAFKA_CONTAINER="kafka"
