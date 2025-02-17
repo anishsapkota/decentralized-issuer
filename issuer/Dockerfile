@@ -20,7 +20,7 @@ FROM debian:latest
 WORKDIR /app
 
 # Copy built binary from builder stage
-COPY --from=builder /app/target/release/issuer /app/issuer
+COPY --from=builder /app/target/release/issuer-frontend /app/issuer-frontend
 COPY --from=builder /app/certs /app/certs 
 COPY --from=builder /app/metadata /app/metadata
 
@@ -36,4 +36,4 @@ EXPOSE 3000
 ENV RUST_LOG=info
 ENV HOST=0.0.0.0:3000
 # Entrypoint
-ENTRYPOINT ["/app/issuer"]
+ENTRYPOINT ["/app/issuer-frontend"]
