@@ -3,5 +3,5 @@ eval/.venv/*
 code_context_issuer.txt
 code_context.txt
 get_context.sh
-keys/*
+signing_nodes/keys/*
 eval/__pycache__/*
