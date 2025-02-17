@@ -1,23 +1,54 @@
-# decentralized-issuer
-Decentralising credentials issuance authority by using multi party computation based threshold signatures.
+# Decentralized-Issuer
+Decentralising credentials issuance authority by threshold signatures schemes.
 
 This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold Signatures](https://eprint.iacr.org/2020/852.pdf)
 
 # Running locally
+## Prerequisite
+1. Make sure that the docker is installed and is running.
+   
 **Issuer**
-1. Replace .env url with [ngrok](https://ngrok.com) url for localhost:7001
-2. ```cargo run```
+1. Build a docker image of issuer.
+```bash
+docker build -t issuer-frontend .
+```
 
-This will start your issuer
+2. Replace `SERVER_URL=https://e7eb-149-233-55-5.ngrok-free.app` url with your [ngrok](https://ngrok.com) url for localhost:3000
+
+3. Run the Issuer-Frontend in a docker container
+```bash
+chmod +x deploy_docker.sh
+./deploy_docker.sh
+```
+
+This will start your Issuer-Frontend, this component interacts with your OID4VCI compliant wallet.
+
+**Setting up Kafka**
+
+
+1. Run Kafka in a docker container
+```bash
+docker compose -f docker-compose-dev.yml up -d
+```
+2. Setup kafka topics by running `./setup-kafka.sh`.
+
 
 **Signing Nodes**
-1. `docker compose up -d` : This will start apache kafka in a docker container
-2. `cargo run -- -n 5 -t 3`: This will start 5 nodes with threshold 3.
+1. Build a docker image of siging node.
+```bash
+docker build -t frost-node .
+```
+2. Run nodes in docker containers 
+```bash
+./deploy_docker.sh <no of nodes> <threshold> <one_round | two_round>
+```
+e.g `./deploy_docker.sh 10 7 one_round`
 
-For inital run, there are no partial keys, so this will initiate distirbuted key generation.
+This will also pull the image of redis and nginx and run them in docker container.
+
 
 **Testing**
-1. send a post request with following json body to `http://localhost:7001/offer`
+1. send a post request with following json body to `http://localhost:3000/offer`
 ```
 {
     "credentialSubject": {
