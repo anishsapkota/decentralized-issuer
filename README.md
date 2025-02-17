@@ -13,7 +13,7 @@ This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold 
 docker build -t issuer-frontend .
 ```
 
-2. Replace `SERVER_URL=https://e7eb-149-233-55-5.ngrok-free.app` url with your [ngrok](https://ngrok.com) url for localhost:3000
+2. Replace `SERVER_URL=https://e7eb-149-233-55-5.ngrok-free.app` url in `deploy_docker.sh` script file with your [ngrok](https://ngrok.com) url for localhost:3000
 
 3. Run the Issuer-Frontend in a docker container
 ```bash
