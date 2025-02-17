@@ -6,7 +6,8 @@ WORKDIR /app
 # Copy source files
 # Copy only Cargo files first to cache dependencies
 COPY Cargo.toml Cargo.lock ./
-
+COPY certs/ ./certs/
+COPY metadata/ ./metadata/
 COPY src/ ./src/
 
 # Build the actual application
@@ -19,11 +20,9 @@ FROM debian:latest
 WORKDIR /app
 
 # Copy built binary from builder stage
-COPY --from=builder /app/target/release/nodes /app/nodes
-
-# Create and configure keys directory
-RUN mkdir -p /app/keys
-VOLUME /app/keys
+COPY --from=builder /app/target/release/issuer /app/issuer
+COPY --from=builder /app/certs /app/certs 
+COPY --from=builder /app/metadata /app/metadata
 
 RUN apt-get update && apt-get install -y \
     iputils-ping \
@@ -31,10 +30,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Expose HTTP server port
-EXPOSE 3030
+EXPOSE 3000
 
 # Environment variables
 ENV RUST_LOG=info
-ENV KAFKA_BROKER=kafka:9092
+ENV HOST=0.0.0.0:3000
 # Entrypoint
-ENTRYPOINT ["/app/nodes"]
+ENTRYPOINT ["/app/issuer"]

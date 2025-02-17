@@ -6,9 +6,9 @@ mod node;
 mod node_state;
 mod utils;
 
-use broker::{consume_messages, create_consumer};
+use broker::{consume_messages, create_consumer, create_producer};
 use frost_lib::keygen::{KeyGenDKGPropsedCommitment, KeyPair, Share};
-use node::{preprocess_nonces_commitments, start_http_server, start_keygen};
+use node::{finalize_keygen, preprocess_nonces_commitments, start_http_server, start_keygen};
 use node_state::{Db, NodeState};
 use scc::HashMap;
 use utils::check_and_read_keypair;
@@ -64,11 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Mode: {}", mode);
 
     // Initialize Kafka producer and consumer
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", env::var("KAFKA_BROKER").unwrap_or("localhost:9092".to_string()))
-        //.set("bootstrap.servers", "localhost:9092")
-        .set("compression.type", "lz4")
-        .create()
+    let producer: FutureProducer = create_producer()
+        .await
         .expect("Producer creation error");
 
     let consumer: StreamConsumer = create_consumer(node_id, 0)
@@ -108,17 +105,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         consume_messages(consumer_state, consumer).await;
     });
 
-    sleep(Duration::from_secs(2)).await;
+    sleep(Duration::from_secs(4)).await;
 
     // Check if keypair exists
     if !check_and_read_keypair(state.clone()).unwrap() {
         println!("Node {}: No keys found - initiating DKG", node_id);
         start_keygen(state.clone()).await;
-        //sleep(Duration::from_secs(10)).await;
-        //finalize_keygen(state.clone()).await;
+        // sleep(Duration::from_secs(10)).await;
+        // finalize_keygen(state.clone()).await;
     }
-
-
 
     // preprocess nonces
     if mode == "one_round" {

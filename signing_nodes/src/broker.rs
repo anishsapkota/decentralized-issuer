@@ -2,6 +2,7 @@ use crate::node::process_message;
 use crate::node_state::NodeState;
 use futures_util::stream::StreamExt;
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::producer::FutureProducer;
 use rdkafka::{ClientConfig, TopicPartitionList};
 use std::env;
 use std::error::Error;
@@ -50,6 +51,16 @@ pub async fn create_consumer(
 
     //consumer.assign(&tpl).expect("Error assigning partitions");
     Ok(consumer)
+}
+
+pub async fn create_producer() -> Result<FutureProducer, Box<dyn Error>> {
+    let producer: rdkafka::producer::FutureProducer =  ClientConfig::new()
+    .set("bootstrap.servers", env::var("KAFKA_BROKER").unwrap_or("localhost:9092".to_string()))
+    .set("compression.type", "lz4")
+    .create()
+    .expect("Producer creation error");
+
+    Ok(producer)
 }
 
 pub async fn consume_messages(state: NodeState, consumer: StreamConsumer) {

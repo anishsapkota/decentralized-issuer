@@ -19,7 +19,10 @@ if [ -z "$TOTAL_NODES" ] || [ -z "$THRESHOLD" ]; then
     echo "Please set TOTAL_NODES and THRESHOLD."
     exit 1
 fi
+
+#Start redis
 docker run --rm -d --name redis -p 6379:6379 --network signing_nodes_my-network redis:latest
+
 # Start N containers
 for (( NODE_ID=1; NODE_ID<=$TOTAL_NODES; NODE_ID++ )); do
     PORT=$((BASE_PORT + NODE_ID - 1))  # Assign unique port for each node
@@ -32,8 +35,7 @@ for (( NODE_ID=1; NODE_ID<=$TOTAL_NODES; NODE_ID++ )); do
         -e NODE_ID=$NODE_ID \
         -e N=$TOTAL_NODES \
         -e T=$THRESHOLD \
-        -e KAFKA_BROKER="kafka1:9092,kafka2:9092" \
-        -e NUM_COMMITMENTS=50000 \
+        -e NUM_COMMITMENTS=100000 \
         -e MODE=$MODE \
         --network $NETWORK \
         --name $CONTAINER_NAME \

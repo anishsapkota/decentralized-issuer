@@ -112,6 +112,8 @@ pub async fn start_keygen(state: NodeState) {
 
     // Broadcast the commitment to other nodes via Kafka
     broadcast_commitment(&state, commitment.clone()).await;
+    sleep(Duration::from_secs(2)).await;
+    broadcast_commitment(&state, commitment.clone()).await;
 
     // Send shares to corresponding nodes via Kafka
     send_shares(&state, shares.clone()).await;
@@ -219,7 +221,7 @@ pub async fn finalize_keygen(state: NodeState) {
             sleep(Duration::from_secs(1)).await;
             if count == 0 {
                 println!("Not all commitments received");
-                broadcast_retry_dkg(&state).await;
+                //broadcast_retry_dkg(&state).await;
                 return;
             }
             count -= 1;
@@ -282,7 +284,7 @@ pub async fn finalize_keygen(state: NodeState) {
             Ok(kp) => kp,
             Err(e) => {
                 println!("Keygen error: {:?}", e);
-                broadcast_retry_dkg(&state).await;
+                //broadcast_retry_dkg(&state).await;
                 return;
             }
         }
@@ -745,10 +747,16 @@ pub async fn start_http_server(state: NodeState) {
                 let _ = signing_requests.insert(request_id.to_string(), tx);
             }
 
-            tokio::spawn(async move {
-                initiate_signing(state, payload.msg, request_id.to_string()).await;
-            });
-
+            if state.total_nodes==1 && state.threshold==1 {
+                tokio::spawn(async move {
+                    initiate_standalone_signing(state, payload.hash, request_id.to_string()).await;
+                });
+                    
+                } else {
+                tokio::spawn(async move {
+                    initiate_signing(state, payload.hash, request_id.to_string()).await;
+                });
+            }
             //Wait for the signature
             match rx.await {
                 Ok(signature) => Ok::<_, warp::Rejection>(warp::reply::json(&signature)),
@@ -874,4 +882,85 @@ pub async fn preprocess_nonces_commitments(state: NodeState) {
         (state.node_id, commitments.clone())
         .expect("Failed to store commitments in Redis");
 
+}
+
+// for n = 1 , t = 1, it should act as a centralized single node signing
+pub async fn initiate_standalone_signing(state: NodeState, payload: String, request_id: String) {
+    println!("Node {}: Initiating standalone signing", state.node_id);
+
+    // Retrieve the node's keypair
+    let keypair = {
+        let db = &state.keypair_db;
+        match db.read(&state.node_id, |_, v| v.clone()) {
+            Some(kp) => kp.clone(),
+            None => {
+                println!("Keypair not generated yet");
+                return;
+            }
+        }
+    };
+
+    // Generate a nonce for signing
+    let mut rng = OsRng;
+    let (signing_commitments, mut nonces) = match preprocess(1, state.node_id, &mut rng) {
+        Ok(result) => result,
+        Err(e) => {
+            println!("Preprocess error: {:?}", e);
+            return;
+        }
+    };
+
+    // Perform signing
+    let response = match sign(&keypair, &signing_commitments, &mut nonces, &payload) {
+        Ok(resp) => resp,
+        Err(e) => {
+            println!("Signing error: {:?}", e);
+            return;
+        }
+    };
+
+    // Aggregate the signature (trivial in this case)
+        let mut signer_pubkeys: std::collections::HashMap<u32, RistrettoPoint> = std::collections::HashMap::new();
+        signer_pubkeys.insert(state.node_id, keypair.public.clone());
+
+        let group_sig = match aggregate(
+        &payload,
+        &signing_commitments,
+        &vec![response.clone()],
+        &signer_pubkeys,
+    ) {
+        Ok(sig) => sig,
+        Err(e) => {
+            println!("Aggregation error: {:?}", e);
+            return;
+        }
+    };
+
+    // Verify the signature
+    let group_public_key = keypair.group_public;
+    if let Err(e) = validate(&payload, &group_sig, group_public_key) {
+        println!("Signature validation failed: {:?}", e);
+        return;
+    }
+
+    // Encode the signature
+    let r_bytes = group_sig.r.compress().to_bytes(); // [u8; 32]
+    let z_bytes = group_sig.z.to_bytes(); // [u8; 32]
+    let mut signature_bytes = Vec::with_capacity(64);
+    signature_bytes.extend_from_slice(&r_bytes);
+    signature_bytes.extend_from_slice(&z_bytes);
+    let signature_b64 = encode_config(&signature_bytes, URL_SAFE_NO_PAD);
+
+    // Respond with the signature
+    let response_data = SigningResult {
+        request_id: request_id.clone(),
+        initator_id: state.node_id,
+        signature: signature_b64.clone(),
+    };
+    handle_signing_result(&state, response_data).await;
+
+    println!(
+        "Node {}: Standalone signing completed for request ID {}",
+        state.node_id, request_id
+    );
 }

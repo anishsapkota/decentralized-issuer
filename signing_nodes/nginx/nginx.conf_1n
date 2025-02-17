@@ -1,0 +1,33 @@
+
+worker_processes auto;  # Automatically set based on CPU cores
+worker_rlimit_nofile 30000;  # Increase system limits
+
+events {
+    worker_connections 1024;  # Max connections per worker
+    multi_accept on;
+    use epoll;  # Use efficient event processing
+}
+
+http {
+    # Weighted Round Robin
+    upstream backend {
+        # Use least_conn or other methods as needed
+        server frost-node-1:3030;
+    }
+
+    server {
+        listen 80;
+        
+        location /sign {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        location /verify {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+}

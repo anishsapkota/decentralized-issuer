@@ -30,7 +30,7 @@ pub struct NodeState {
     // Signing session per request
     pub signing_requests: Arc<Mutex<std::collections::HashMap<String, oneshot::Sender<String>>>>,
     pub signing_sessions: Arc<HashMap<String, SigningSession>>,
-    // Leader Election
+    // Leader Election--> not used for now, can be extended in future if needed
     pub is_master: Arc<Mutex<bool>>,
     pub master_id: Arc<Mutex<u32>>,
     pub last_heartbeat: Arc<HashMap<u32, Instant>>,

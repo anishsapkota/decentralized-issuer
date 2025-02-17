@@ -1,5 +1,5 @@
 [package]
-name = "issuer"
+name = "issuer-frontend"
 version = "0.1.0"
 edition = "2021"
 

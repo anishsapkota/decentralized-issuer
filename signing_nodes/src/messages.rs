@@ -77,7 +77,7 @@ pub struct SigningResult {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HeaderPayloadHash {
-    pub msg: String,
+    pub hash: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -918,7 +918,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "187674a687eed5fe42285b40c6291f9a01517d415fad1c3cbc6a9f778af7fcd4"
 
 [[package]]
-name = "issuer"
+name = "issuer-frontend"
 version = "0.1.0"
 dependencies = [
  "actix-web",

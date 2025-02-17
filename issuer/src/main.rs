@@ -88,6 +88,7 @@ async fn log_request(req: &HttpRequest, body: &str) {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    println!("===== Starting Issuer-Frontend Server: Listening at 3000 ======");
     dotenv().ok();
 
     // Read the private and public keys
@@ -105,6 +106,8 @@ async fn main() -> std::io::Result<()> {
         public_key_pem,
     });
 
+    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+
     HttpServer::new(move || {
         App::new()
             .app_data(data.clone())
@@ -112,6 +115,7 @@ async fn main() -> std::io::Result<()> {
             //.service(verify_access_token)
             .service(jwks)
             .service(openid_configuration)
+            .service(test)
             //.service(authorize)
             //.service(direct_post)
             .service(token)
@@ -120,7 +124,7 @@ async fn main() -> std::io::Result<()> {
             .service(credential_offer_id)
             .service(credential_issuer_metadata)
     })
-    .bind("127.0.0.1:3000")?
+    .bind(host)?
     .run()
     .await
 }
@@ -278,14 +282,22 @@ async fn credential_offer_id(req: HttpRequest,
 
     let response = serde_json::json!({
         "credential_issuer": env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
-        "credentials": entry.credential_data.as_ref().unwrap()["type"],
+        //"credentials": entry.credential_data.as_ref().unwrap()["type"],
+        "credential_configuration_ids": [
+        "UniversityDegreeCredential"
+        ],
         "grants": {
-            "authorization_code": {
-                "issuer_state": entry.issuer_state,
-            },
+            // "authorization_code": {
+            //     "issuer_state": entry.issuer_state,
+            // },
             "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
                 "pre-authorized_code": entry.pre_authorized_code,
-                "user_pin_required": true,
+                //"user_pin_required": true,
+                "tx_code": {
+                    "length": 4,
+                    "input_mode": "numeric",
+                    "description": "Please provide the one-time code that was sent via e-mail or offline"
+                 }
             },
         }
     });
@@ -315,7 +327,7 @@ async fn credential_issuer_metadata(req:HttpRequest) -> HttpResponse {
 
 #[get("/.well-known/openid-configuration")]
 async fn openid_configuration(req:HttpRequest) -> HttpResponse {
-    log_request(&req, "GET /.well-known/openid-configuration").await;
+    log_request(&req, "GET /.well-known/oauth-authorization-server").await;
     // Read environment variables
     let server_url = env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:7001".to_string());
     // let auth_server_url: String =
@@ -368,7 +380,7 @@ struct TokenRequest {
     code: Option<String>,
     code_verifier: Option<String>,
     grant_type: Option<String>,
-    user_pin: Option<String>,
+    tx_code: Option<String>,
     #[serde(rename = "pre-authorized_code")]
     pre_authorized_code: Option<String>,
 }
@@ -379,7 +391,7 @@ async fn token(req:HttpRequest,data: web::Data<AppState>, req_body: web::Form<To
     let client_id = req_body.client_id.as_deref().unwrap_or("");
     let grant_type = req_body.grant_type.as_deref().unwrap_or("");
     let pre_authorized_code = req_body.pre_authorized_code.as_deref();
-    let user_pin = req_body.user_pin.as_deref();
+    let tx_code = req_body.tx_code.as_deref();
     let code_verifier = req_body.code_verifier.as_deref();
     let code = req_body.code.as_deref();
 
@@ -387,8 +399,8 @@ async fn token(req:HttpRequest,data: web::Data<AppState>, req_body: web::Form<To
 
     if grant_type == "urn:ietf:params:oauth:grant-type:pre-authorized_code" {
         println!("pre-auth code flow: {}", pre_authorized_code.unwrap_or(""));
-        if user_pin.unwrap_or("") != "1234" {
-            println!("Invalid pin: {}", user_pin.unwrap_or(""));
+        if tx_code.unwrap_or("") != "1234" {
+            println!("Invalid pin: {}", tx_code.unwrap_or(""));
             return HttpResponse::BadRequest().body("Invalid pin");
         }
         credential_identifier = pre_authorized_code.unwrap_or("").to_string();
@@ -475,6 +487,32 @@ fn base64_url_encode_sha256(input: &str) -> String {
     let hash = hasher.finalize();
 
     base64::encode_config(&hash, URL_SAFE_NO_PAD)
+}
+
+#[get("/test")]
+async fn test(req: HttpRequest) -> HttpResponse {
+
+    log_request(&req, "GET /test").await;
+
+    let client = Client::new();
+    let proxy_url = env::var("PROXY_URL").unwrap_or_else(|_| "http://127.0.0.1:3030/sign".to_string());
+    let res = client
+        .post(proxy_url)
+        .json(&serde_json::json!({"hash":"to_be_signed_hash"}))
+        .send()
+        .await;
+
+    let signature = match res {
+        Ok(jwt) => jwt.text().await,
+        Err(err) => {
+            println!("Error signing JWT: {}", err);
+            return HttpResponse::InternalServerError().body("Error issuing credential");
+        }
+    }
+    .expect("Error unwrapping signature string");
+    
+    HttpResponse::Ok().body(signature)
+
 }
 
 #[post("/credential")]
@@ -603,10 +641,10 @@ async fn credential(
 
     // send post request to the threshold-sig-nodes
     let client = Client::new();
-
+    let proxy_url = env::var("PROXY_URL").unwrap_or_else(|_| "http://127.0.0.1:3030/sign".to_string());
     let res = client
-        .post("http://127.0.0.1:3030/sign")
-        .json(&serde_json::json!({"msg":to_be_signed_hash}))
+        .post(proxy_url)
+        .json(&serde_json::json!({"hash":to_be_signed_hash}))
         .send()
         .await;
 

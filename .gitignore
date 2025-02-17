@@ -1,1 +1,7 @@
 */target/*
+eval/.venv/*
+code_context_issuer.txt
+code_context.txt
+get_context.sh
+keys/*
+eval/__pycache__/*
