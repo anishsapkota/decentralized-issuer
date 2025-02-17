@@ -14,7 +14,11 @@ This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold 
 cd signing_nodes
 docker compose -f docker-compose-dev.yml up -d
 ```
-2. Setup kafka topics by running `./setup-kafka.sh`.
+2. Setup kafka topics by running 
+```bash
+chmod +x setup-kafka.sh
+./setup-kafka.sh
+```
    
 **Issuer**
 1. Build a docker image of issuer.
