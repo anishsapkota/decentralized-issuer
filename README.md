@@ -6,10 +6,20 @@ This is based on this paper: [FROST: Flexible Round-Optimized Schnorr Threshold 
 # Running locally
 ## Prerequisite
 1. Make sure that the docker is installed and is running.
+
+**Setting up Kafka**
+
+1. Run Kafka in a docker container
+```bash
+cd signing_nodes
+docker compose -f docker-compose-dev.yml up -d
+```
+2. Setup kafka topics by running `./setup-kafka.sh`.
    
 **Issuer**
 1. Build a docker image of issuer.
 ```bash
+cd issuer
 docker build -t issuer-frontend .
 ```
 
@@ -23,19 +33,10 @@ chmod +x deploy_docker.sh
 
 This will start your Issuer-Frontend, this component interacts with your OID4VCI compliant wallet.
 
-**Setting up Kafka**
-
-
-1. Run Kafka in a docker container
-```bash
-docker compose -f docker-compose-dev.yml up -d
-```
-2. Setup kafka topics by running `./setup-kafka.sh`.
-
-
 **Signing Nodes**
 1. Build a docker image of siging node.
 ```bash
+cd signing_nodes
 docker build -t frost-node .
 ```
 2. Run nodes in docker containers 
