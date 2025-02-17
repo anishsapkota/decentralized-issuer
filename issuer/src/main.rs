@@ -14,6 +14,7 @@ use openssl::pkey::PKey;
 use rand::{thread_rng, RngCore};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
@@ -318,8 +319,18 @@ async fn credential_issuer_metadata(req:HttpRequest) -> HttpResponse {
     if let Err(_) = file.read_to_string(&mut metadata_content) {
         return HttpResponse::InternalServerError().body("Error reading metadata file");
     }
-    let metadata_json: serde_json::Value =
-        serde_json::from_str(&metadata_content).expect("JSON was not well-formatted");
+    let mut metadata_json: serde_json::Value = match serde_json::from_str(&metadata_content) {
+        Ok(json) => json,
+        Err(_) => return HttpResponse::InternalServerError().body("Invalid JSON format in metadata file"),
+    };
+    
+    if let Ok(server_url) = env::var("SERVER_URL") {
+        metadata_json["credential_issuer"] = json!(server_url);
+        metadata_json["authorization_servers"] = json!([server_url.clone()]);
+        metadata_json["credential_endpoint"] = json!(format!("{}/credential", server_url));
+        metadata_json["deferred_credential_endpoint"] = json!(format!("{}/credential_deferred", server_url));
+    }
+    
     HttpResponse::Ok()
         .status(StatusCode::OK)
         .json(metadata_json)
