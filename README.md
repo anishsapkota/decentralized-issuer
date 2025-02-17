@@ -47,7 +47,7 @@ docker build -t frost-node .
 ```bash
 ./deploy_docker.sh <no of nodes> <threshold> <one_round | two_round>
 ```
-e.g `./deploy_docker.sh 10 7 one_round`
+e.g `./deploy_docker.sh 10 7 one_round`. Note: delete the already generated keys first.
 
 The script will also pull the image of redis and nginx and run them in docker container.
 
