@@ -47,7 +47,8 @@ docker build -t frost-node .
 ```bash
 ./deploy_docker.sh <no of nodes> <threshold> <one_round | two_round>
 ```
-e.g `./deploy_docker.sh 10 7 one_round`. Note: delete the already generated keys first using `clean_up.sh` script.
+e.g `./deploy_docker.sh 10 7 one_round`. 
+Note: `signing_nodes/key`directory already contains the keys for (10,7) setup, if you want to run different setup, please delete the already generated keys first using `clean_up.sh` script. This will start DKG on node start.
 
 The script will also pull the image of redis and nginx and run them in docker container.
 
