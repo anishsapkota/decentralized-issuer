@@ -44,7 +44,7 @@ docker build -t frost-node .
 ```
 e.g `./deploy_docker.sh 10 7 one_round`
 
-This will also pull the image of redis and nginx and run them in docker container.
+The script will also pull the image of redis and nginx and run them in docker container.
 
 
 **Testing**
